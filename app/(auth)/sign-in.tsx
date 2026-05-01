@@ -183,7 +183,7 @@ export default function SignInScreen() {
           <Button
             title={t('google')}
             variant="outline"
-            icon={<AntDesign name="google" size={18} color="#EA4335" />}
+            icon={<AntDesign name="google" size={18} color="red" />}
             onPress={handleGoogleOAuth}
             style={{ borderColor: colors.border }}
           />

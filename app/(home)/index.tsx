@@ -29,6 +29,51 @@ const { width, height } = Dimensions.get('window');
 const apiKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 
+const getSpeechLocale = (lang: string) => {
+  const l = (lang || '').toLowerCase();
+  if (l === 'తెలుగు' || l === 'te' || l === 'te-in' || l === 'te_in') return 'te-IN';
+  if (l === 'hi' || l === 'hi-in' || l === 'hi_in') return 'hi-IN';
+  if (l === 'es' || l === 'es-es' || l === 'es_es') return 'es-ES';
+  if (l === 'fr' || l === 'fr-fr' || l === 'fr_fr') return 'fr-FR';
+  if (l === 'de' || l === 'de-de' || l === 'de_de') return 'de-DE';
+  return 'en-US';
+};
+
+const getPreferredVoice = async (locale: string) => {
+  const voices = await Speech.getAvailableVoicesAsync();
+  const normalizedLocale = locale.toLowerCase();
+  return (
+    voices.find((voice) => voice.language?.toLowerCase() === normalizedLocale) ||
+    voices.find((voice) => voice.language?.toLowerCase().startsWith(normalizedLocale.split('-')[0])) ||
+    null
+  );
+};
+
+  // Preferred model order for availability/fallback
+  const preferredModels = ['gemini-flash-latest', 'gemini-3-pro-preview', 'gemini-2.5-flash'];
+
+  const callGenerativeModel = async (contents: any[], responseMimeType = 'application/json') => {
+    if (!genAI) throw new Error('Generative AI client not configured');
+    for (let i = 0; i < preferredModels.length; i++) {
+      const modelId = preferredModels[i];
+      try {
+        const model = genAI.getGenerativeModel({ model: modelId });
+        const result = await model.generateContent({ contents, generationConfig: { responseMimeType } });
+        return result;
+      } catch (err) {
+        const msg = String(err || '');
+        // If transient (503/high demand) try next model after short backoff, otherwise rethrow
+        if (msg.includes('503') || msg.toLowerCase().includes('high demand') || msg.toLowerCase().includes('temporar')) {
+          const backoff = 300 + i * 300;
+          await new Promise((r) => setTimeout(r, backoff));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw new Error('All configured models failed or are unavailable');
+  };
+
 interface MealAnalysis {
   name: string;
   allergenNotices: string[];
@@ -62,6 +107,7 @@ export default function MealAnalyzerScreen() {
   const [showImageNutrients, setShowImageNutrients] = useState(false);
   const [showLang, setShowLang] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [speechWarning, setSpeechWarning] = useState<string | null>(null);
   const prevLangRef = React.useRef(i18n.language);
 
   const getLangName = (code: string) => {
@@ -87,11 +133,7 @@ export default function MealAnalyzerScreen() {
       You MUST keep the exact same JSON key structure. Output strictly raw valid JSON.
       JSON to translate:
       ${JSON.stringify(currentAnalysis)}`;
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-      const result = await model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: "application/json" }
-      });
+      const result = await callGenerativeModel([{ role: 'user', parts: [{ text: prompt }] }], "application/json");
       let text = result.response.text();
       if (text.startsWith('```json')) text = text.replace(/```json\n?/, '').replace(/\n?```$/, '').trim();
       else if (text.startsWith('```')) text = text.replace(/```\n?/, '').replace(/\n?```$/, '').trim();
@@ -112,14 +154,22 @@ export default function MealAnalyzerScreen() {
 
     if (!analysisResult) return;
 
-    const readText = `This is ${analysisResult.name}. 
-      It contains ${analysisResult.calories} calories, with ${analysisResult.macros.carbs} of CARBS, 
-      ${analysisResult.macros.protein} of PROTEIN, and ${analysisResult.macros.fat} of FAT. 
-      ${analysisResult.detailedAnalysis} 
-      ${analysisResult.portionGuidance}`;
+    // Use only translated fields to avoid mixing english words with translated phrases
+    const readText = `${analysisResult.name}. ${analysisResult.detailedAnalysis} ${analysisResult.portionGuidance}`;
+
+    const speechLang = getSpeechLocale(i18n.language);
+    const voice = await getPreferredVoice(speechLang);
+
+    if (!voice && speechLang !== 'en-US') {
+      setSpeechWarning(`No installed voice was found for ${speechLang}. Using the device default voice.`);
+    } else {
+      setSpeechWarning(null);
+    }
 
     setIsSpeaking(true);
     Speech.speak(readText, {
+      language: speechLang,
+      voice: voice?.identifier,
       onDone: () => setIsSpeaking(false),
       onStopped: () => setIsSpeaking(false),
       onError: () => setIsSpeaking(false),
@@ -180,18 +230,15 @@ Format your response STRICTLY as a JSON object matching this schema. Do not incl
   "portionGuidance": "Advice on portion control for this specific meal."
 }`;
 
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-
-      const result = await model.generateContent({
-        contents: [{
+      const result = await callGenerativeModel([
+        {
           role: 'user',
           parts: [
             { text: prompt },
             { inlineData: { data: base64, mimeType: 'image/jpeg' } }
           ]
-        }],
-        generationConfig: { responseMimeType: "application/json" }
-      });
+        }
+      ], "application/json");
 
       let responseText = result.response.text();
       if (responseText.startsWith('```json')) responseText = responseText.replace(/```json\n?/, '').replace(/\n?```$/, '').trim();
@@ -292,6 +339,14 @@ Format your response STRICTLY as a JSON object matching this schema. Do not incl
         <StatusBar barStyle={isDark ? "light-content" : "dark-content"} backgroundColor={colors.background} />
         {renderTopBar()}
         <ScrollView contentContainerStyle={styles.resultScroll}>
+          {speechWarning && (
+            <View style={[styles.speechWarningBox, { backgroundColor: isDark ? '#451a03' : '#fffbeb', borderColor: isDark ? '#92400e' : '#f59e0b' }]}>
+              <Feather name="alert-triangle" size={14} color={isDark ? '#fbbf24' : '#b45309'} />
+              <Text variant="caption" color={isDark ? '#fde68a' : '#92400e'} style={{ flex: 1, marginLeft: 8, fontWeight: '600' }}>
+                {speechWarning}
+              </Text>
+            </View>
+          )}
           <Card elevated style={{ marginBottom: 20 }}>
             {/* Header */}
             <View style={styles.resultHeader}>
@@ -300,12 +355,6 @@ Format your response STRICTLY as a JSON object matching this schema. Do not incl
                 <Pressable style={[styles.iconButton, { backgroundColor: isDark ? colors.secondary : '#f0fdf4' }]} onPress={toggleSpeech}>
                   <Feather name={isSpeaking ? "volume-x" : "volume-2"} size={18} color={colors.primary} />
                 </Pressable>
-                <Button
-                  title={isSpeaking ? "STOP" : "LOG"}
-                  onPress={toggleSpeech}
-                  size="small"
-                  style={{ width: 'auto', paddingHorizontal: 12, height: 36 }}
-                />
               </View>
             </View>
 
@@ -517,4 +566,5 @@ const styles = StyleSheet.create({
 
   iconTitleRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
   greenPillBox: { borderRadius: 20, paddingHorizontal: 16, paddingVertical: 12, marginBottom: 10, borderWidth: 1 }
+  ,speechWarningBox: { flexDirection: 'row', alignItems: 'flex-start', padding: 12, borderRadius: 12, borderWidth: 1, marginHorizontal: 16, marginTop: 16, marginBottom: 8 }
 });
