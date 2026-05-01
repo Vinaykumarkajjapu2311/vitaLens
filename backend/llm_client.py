@@ -5,11 +5,9 @@ LLM client using Google Gemini API.
 import json
 import logging
 import os
-import base64
 from typing import Any
 
 import google.generativeai as genai
-from google.generativeai.types import GenerationConfig
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +19,22 @@ if not GEMINI_API_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Use Flash for speed and reliability
-TEXT_MODEL = "gemini-1.5-flash"
-VISION_MODEL = "gemini-1.5-flash"
+# Preferred model order for availability/fallback
+GEMINI_MODELS = [
+    "gemini-flash-latest",
+    "gemini-2.5-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-pro",
+]
+TEXT_MODEL = GEMINI_MODELS[0]
+VISION_MODEL = GEMINI_MODELS[0]
 
 # Expose for health endpoint
 # VISION_MODEL = "yolov8 (local CV)" # We still use YOLO for detection, but Gemini for synthesis
 
-def _get_model():
-    return genai.GenerativeModel(TEXT_MODEL)
+def _get_model(model_name: str = TEXT_MODEL):
+    return genai.GenerativeModel(model_name)
 
 
 def _parse_json_response(text: str) -> Any:
@@ -48,9 +53,26 @@ def _parse_json_response(text: str) -> Any:
 
 
 def _chat_text(prompt: str) -> str:
-    model = _get_model()
-    response = model.generate_content(prompt)
-    return response.text
+    for idx, model_name in enumerate(GEMINI_MODELS):
+        try:
+            model = _get_model(model_name)
+            response = model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            msg = str(e).lower()
+            is_retryable = (
+                "503" in msg
+                or "high demand" in msg
+                or "temporar" in msg
+                or "not found" in msg
+                or "unsupported model" in msg
+            )
+            if is_retryable and idx < len(GEMINI_MODELS) - 1:
+                logger.warning(f"Gemini model failed ({model_name}), retrying next model: {e}")
+                continue
+            raise
+
+    raise RuntimeError("All configured Gemini models failed or are unavailable")
 
 
 # ── Meal image analysis ────────────────────────────────────────────────────────

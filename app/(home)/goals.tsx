@@ -32,6 +32,47 @@ const { width, height } = Dimensions.get('window');
 const apiKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 
+const preferredModels = [
+  'gemini-flash-latest',
+  'gemini-2.5-flash',
+  'gemini-1.5-flash',
+  'gemini-1.5-pro',
+  'gemini-pro',
+];
+
+const callGenerativeModel = async (contents: any[], responseMimeType = 'application/json') => {
+  if (!genAI) throw new Error('Generative AI client not configured');
+
+  for (let i = 0; i < preferredModels.length; i++) {
+    const modelId = preferredModels[i];
+    try {
+      const model = genAI.getGenerativeModel({ model: modelId });
+      return await model.generateContent({
+        contents,
+        generationConfig: { responseMimeType },
+      });
+    } catch (err) {
+      const msg = String(err || '').toLowerCase();
+      const shouldRetry =
+        msg.includes('503') ||
+        msg.includes('high demand') ||
+        msg.includes('temporar') ||
+        msg.includes('not found') ||
+        msg.includes('unsupported model');
+
+      if (shouldRetry && i < preferredModels.length - 1) {
+        const backoffMs = 300 + i * 300;
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        continue;
+      }
+
+      throw err;
+    }
+  }
+
+  throw new Error('All configured Gemini models failed or are unavailable');
+};
+
 export default function GoalsScreen() {
   const { signOut, userId } = useAuth();
   const { user } = useUser();
@@ -88,7 +129,10 @@ export default function GoalsScreen() {
   };
 
   const generateMealPlan = async () => {
-    if (!genAI) { alert('EXPO_PUBLIC_GEMINI_API_KEY is missing.'); return; }
+    if (!genAI) {
+      Alert.alert('Configuration Error', 'EXPO_PUBLIC_GEMINI_API_KEY is missing in your app environment.');
+      return;
+    }
     setIsGeneratingPlan(true);
     setGeneratedPlan(null);
 
@@ -154,11 +198,10 @@ CRITICAL INSTRUCTIONS:
 Do NOT skip any days.`;
 
     try {
-      const model = genAI.getGenerativeModel({ model: 'gemini-3.0-flash' });
-      const result = await model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: "application/json" }
-      });
+      const result = await callGenerativeModel(
+        [{ role: 'user', parts: [{ text: prompt }] }],
+        'application/json'
+      );
       let responseText = result.response.text();
       if (responseText.startsWith('\`\`\`json')) responseText = responseText.replace(/\`\`\`json\n?/, '').replace(/\n?\`\`\`$/, '').trim();
       else if (responseText.startsWith('\`\`\`')) responseText = responseText.replace(/\`\`\`\n?/, '').replace(/\n?\`\`\`$/, '').trim();
@@ -167,7 +210,8 @@ Do NOT skip any days.`;
       setGeneratedPlan(parsed);
     } catch (error) {
       console.error(error);
-      alert('Failed to generate plan.');
+      const message = error instanceof Error ? error.message : String(error);
+      Alert.alert('AI Request Failed', message || 'Failed to generate meal plan.');
     } finally {
       setIsGeneratingPlan(false);
     }

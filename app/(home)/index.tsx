@@ -7,16 +7,16 @@ import * as Speech from 'expo-speech';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  ActivityIndicator,
-  Alert,
-  Dimensions,
-  Image,
-  Platform,
-  Pressable,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  View
+    ActivityIndicator,
+    Alert,
+    Dimensions,
+    Image,
+    Platform,
+    Pressable,
+    ScrollView,
+    StatusBar,
+    StyleSheet,
+    View
 } from 'react-native';
 
 import { Button } from '../../components/ui/Button';
@@ -50,7 +50,13 @@ const getPreferredVoice = async (locale: string) => {
 };
 
   // Preferred model order for availability/fallback
-  const preferredModels = ['gemini-flash-latest', 'gemini-3-pro-preview', 'gemini-2.5-flash'];
+  const preferredModels = [
+    'gemini-flash-latest',
+    'gemini-2.5-flash',
+    'gemini-1.5-flash',
+    'gemini-1.5-pro',
+    'gemini-pro',
+  ];
 
   const callGenerativeModel = async (contents: any[], responseMimeType = 'application/json') => {
     if (!genAI) throw new Error('Generative AI client not configured');
@@ -63,7 +69,13 @@ const getPreferredVoice = async (locale: string) => {
       } catch (err) {
         const msg = String(err || '');
         // If transient (503/high demand) try next model after short backoff, otherwise rethrow
-        if (msg.includes('503') || msg.toLowerCase().includes('high demand') || msg.toLowerCase().includes('temporar')) {
+        if (
+          msg.includes('503') ||
+          msg.toLowerCase().includes('high demand') ||
+          msg.toLowerCase().includes('temporar') ||
+          msg.toLowerCase().includes('not found') ||
+          msg.toLowerCase().includes('unsupported model')
+        ) {
           const backoff = 300 + i * 300;
           await new Promise((r) => setTimeout(r, backoff));
           continue;

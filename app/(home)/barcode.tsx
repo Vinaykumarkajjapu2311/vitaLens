@@ -7,16 +7,16 @@ import * as Speech from 'expo-speech';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  ActivityIndicator,
-  Alert,
-  Dimensions,
-  Image,
-  Platform,
-  Pressable,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  View
+    ActivityIndicator,
+    Alert,
+    Dimensions,
+    Image,
+    Platform,
+    Pressable,
+    ScrollView,
+    StatusBar,
+    StyleSheet,
+    View
 } from 'react-native';
 
 import { Button } from '../../components/ui/Button';
@@ -49,7 +49,13 @@ const getPreferredVoice = async (locale: string) => {
   );
 };
 
-  const preferredModels = ['gemini-flash-latest', 'gemini-3-pro-preview', 'gemini-2.5-flash'];
+  const preferredModels = [
+    'gemini-flash-latest',
+    'gemini-2.5-flash',
+    'gemini-1.5-flash',
+    'gemini-1.5-pro',
+    'gemini-pro',
+  ];
 
   const callGenerativeModel = async (contents: any[], responseMimeType = 'application/json') => {
     if (!genAI) throw new Error('Generative AI client not configured');
@@ -60,8 +66,14 @@ const getPreferredVoice = async (locale: string) => {
         const result = await model.generateContent({ contents, generationConfig: { responseMimeType } });
         return result;
       } catch (err) {
-        const msg = String(err || '');
-        if (msg.includes('503') || msg.toLowerCase().includes('high demand') || msg.toLowerCase().includes('temporar')) {
+        const msg = String(err || '').toLowerCase();
+        if (
+          msg.includes('503') ||
+          msg.includes('high demand') ||
+          msg.includes('temporar') ||
+          msg.includes('not found') ||
+          msg.includes('unsupported model')
+        ) {
           const backoff = 300 + i * 300;
           await new Promise((r) => setTimeout(r, backoff));
           continue;
@@ -121,11 +133,10 @@ export default function BarcodeScreen() {
     try {
       const targetLangName = getLangName(targetLang);
       const prompt = `Translate the string values of the following JSON object into the ${targetLangName} language.\nYou MUST keep the exact same JSON key structure. Output strictly raw valid JSON.\nJSON to translate:\n${JSON.stringify(currentAnalysis)}`;
-      const model = genAI.getGenerativeModel({ model: 'gemini-flash-latest' });
-      const result = await model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: "application/json" }
-      });
+      const result = await callGenerativeModel(
+        [{ role: 'user', parts: [{ text: prompt }] }],
+        'application/json'
+      );
       let text = result.response.text();
       if (text.startsWith('```json')) text = text.replace(/```json\n?/, '').replace(/\n?```$/, '').trim();
       else if (text.startsWith('```')) text = text.replace(/```\n?/, '').replace(/\n?```$/, '').trim();
